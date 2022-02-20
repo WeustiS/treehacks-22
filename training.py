@@ -13,70 +13,60 @@ from torch.optim.lr_scheduler import LambdaLR
 wandb.init(project="treehacks", entity="weustis")
 
 efficient_transformer = Nystromformer(
-    dim = 512,
-    depth = 8,
-    heads = 8,
-    num_landmarks = 64
+    dim = 1024,
+    depth = 10,
+    heads = 10,
+    num_landmarks = 256
 )
 
 v = ViT(
-    dim = 512,
-    image_size = 512,
-    patch_size = (32,64),
+    dim = 1024,
+    image_size = (576, 960),
+    patch_size = 48,
     num_classes = 1,
     transformer = efficient_transformer
 )
 mae = MAE(
     encoder = v,
-    masking_ratio = 0.6,   # the paper recommended 75% masked patches
-    decoder_dim = 256,      # paper showed good results with just 512
-    decoder_depth = 4       # anywhere from 1 to 8
+    masking_ratio = 0.7,   # the paper recommended 75% masked patches
+    decoder_dim = 512,      # paper showed good results with just 512
+    decoder_depth = 6       # anywhere from 1 to 8
 )
 
 print(sum(p.numel() for p in mae.parameters() if p.requires_grad), 'params')
 
 mae = mae.cuda()
-mae = torch.nn.DataParallel(mae) 
+mae = torch.nn.DataParallel(mae, device_ids=[0,1,4,6]) 
 
 transform = transforms.Compose([
     # you can add other transformations in this list
     transforms.ToTensor(),
-    transforms.RandomResizedCrop((512,512))
+    transforms.Resize((576,960))
 ])
 dataset = torchvision.datasets.ImageFolder('./data', transform=transform)
 
 dataloader = torch.utils.data.DataLoader(
     dataset,
-    batch_size=16,
+    batch_size=48,
     shuffle=True,
     pin_memory=True,
-    num_workers=16,
-    persistent_workers=True,
+    num_workers=20,
+    persistent_workers=False,
     prefetch_factor=2
 )
 
-mem_params = sum([param.nelement()*param.element_size() for param in mae.parameters()])
-mem_bufs = sum([buf.nelement()*buf.element_size() for buf in mae.buffers()])
-mem = mem_params + mem_bufs
-print("Mem!", mem)
 
-summary(v, input_size=(3, 512, 512))
 
-total_epoch = 120
+total_epoch = 90
 
-opt = torch.optim.Adam(mae.parameters(), lr=5e-4)
+opt = torch.optim.Adam(mae.parameters(), lr=5e-3)
 # wandb.init(project="pulse-mae-nystrom", entity="weustis")
 
 def warmup_cooldown(epoch):
-    if epoch < 10:
-        lr = (1.03**epoch - .95)/1000
-    elif epoch < total_epoch-15:
-        lr_adj = epoch%3  # 0,1,2
-        lr = 5e-4 + lr_adj * 5e-5
-    else:
-        tmp = total_epoch-epoch  # 4,3,2,1,or 0
-        lr = 1e-6 + 5e-4*tmp/15
-    print(f"LR_{epoch}:", lr)
+    lr = 5e-3# (0.95**epoch) / (40*4)i
+    if epoch>45:
+        lr=2e-3
+    wandb.log({"lr": lr})
     return lr
 
 lr_lambda = lambda epoch: warmup_cooldown(epoch)
@@ -97,8 +87,8 @@ for epoch in tqdm(range(total_epoch)):
         opt.step()
         
         
-    if epoch%10 ==9:
-        torch.save(mae.state_dict(), f'./models/treehacks-mae-ny_{epoch}.pt')
-        torch.save(v.state_dict(), f'./models/treehacks-vit-ny_{epoch}.pt')
-        torch.save(opt.state_dict(), f'./models/treehacks-opt-ny_{epoch}.pt')
+    if epoch%4==1:
+        torch.save(mae.state_dict(), f'./models/treehacks-mae-mnn_{epoch}.pt')
+        torch.save(v.state_dict(), f'./models/treehacks-vit-mnn_{epoch}.pt')
+        torch.save(opt.state_dict(), f'./models/treehacks-opt-mnn_{epoch}.pt')
     scheduler.step()
